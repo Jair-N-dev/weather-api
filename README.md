@@ -36,10 +36,12 @@ uvicorn main:app --reload
 |--------|----------|-------------|
 | GET | `/` | Información de la API |
 | GET | `/ciudades/` | Listar todas las ciudades |
-| GET | `/clima/?ciudad={nombre}` | Obtener clima de una ciudad |
-| POST | `/agregar-clima/` | Agregar nueva ciudad |
-| PUT | `/actualizar-clima/{ciudad}` | Actualizar datos de ciudad |
-| DELETE | `/eliminar-clima/{ciudad}` | Eliminar ciudad |
+| GET | `/ciudades/{nombre}` | Obtener clima de una ciudad |
+| POST | `/ciudades/` | Agregar nueva ciudad |
+| PUT | `/ciudades/{ciudad_id}` | Actualizar datos de ciudad |
+| DELETE | `/ciudades/{ciudad_id}` | Eliminar ciudad |
+| GET | `/ciudades/clima/{condicion}` | Filtrar  por condiccion |
+| GET | `/ciudades/temperatura/rango` | Filtrar por temperatura |
 
 ## Documentación
 
@@ -63,10 +65,34 @@ curl -X POST http://localhost:8000/agregar-clima/ \
     "humedad": 70
   }'
 ```
+## Base de Datos
+
+Este proyecto usa MySQL. Configuración:
+
+1. Crear base de datos:
+```sql
+CREATE DATABASE weather_db;
+```
+
+2. Configurar variables de entorno:
+```bash
+# Crear archivo .env
+DATABASE_URL=mysql+pymysql://usuario:password@localhost/weather_db
+```
+
+3. Poblar datos iniciales:
+```bash
+python seed.py
+```
+
+4. Ejecutar servidor:
+```bash
+uvicorn main:app --reload
+```
 
 ## Próximas mejoras
 
-- [ ] Conectar con base de datos MySQL
+- [x] Conectar con base de datos MySQL
 - [ ] Agregar autenticación JWT
 - [ ] Implementar tests con Pytest
 - [ ] Deploy en Railway/Render

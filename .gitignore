@@ -11,7 +11,7 @@ venv/
 # VS Code
 .vscode/
 
-# Archivos de entorno
+# Variables de entorno (¡MUY IMPORTANTE!)
 .env
 
 # Base de datos

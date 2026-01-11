@@ -1,156 +1,169 @@
-from fastapi import FastAPI, HTTPException, status
-from typing import Optional
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException, status, Depends
+from typing import List
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
-app = FastAPI(title="WeatherFast API")
+import models
+import schemas
+from database import engine, get_db
 
-# Base de datos simulada (Diccionario)
-clima_db = {
-    "madrid": {"temp": 25, "condicion": "Soleado", "humedad": 40},
-    "bogota": {"temp": 18, "condicion": "Nublado", "humedad": 70},
-    "mexico": {"temp": 22, "condicion": "Despejado", "humedad": 30},
-    "buenos_aires": {"temp": 20, "condicion": "Lluvia", "humedad": 85}
-}
+models.Base.metadata.create_all(bind=engine)
 
-# Validación de datos con Pydantic
-class CiudadClima(BaseModel):
-    ciudad: str = Field(..., min_length=2, max_length=50, description="Nombre de la ciudad")
-    temp: int = Field(..., ge=-50, le=60, description="Temperatura en grados Celsius")
-    condicion: str = Field(..., min_length=3, description="Condición climática")
-    humedad: int = Field(..., ge=0, le=100, description="Humedad en porcentaje")
-    # Ejemplo de datos
-    class Config:
-        json_schema_extra = {   
-            "ejemplo": {
-                "ciudad": "Barcelona",
-                "temp": 23,
-                "condicion": "Parcialmente nublado",
-                "humedad": 65
-            }
-        }
+app = FastAPI(
+    title="WeatherFast API",
+    description="API rápida para obtener y gestionar datos climáticos de ciudades.",
+    version="2.0.0"
+    )
+
+#=========ENDPOINTS DE LA API=========
 
 # 0. Endpoint raíz (Información de la API)
-@app.get("/")
-async def root():
+@app.get("/", tags=["Información"])  
+def root():
     """
     Endpoint raíz - Información de la API.
     """
     return {
         "api": "WeatherFast API",
-        "version": "1.0",
+        "version": "2.0.0",
+        "database": "Mysql",
         "endpoints": {
-            "clima": "/clima/?ciudad={nombre}",
             "ciudades": "/ciudades/",
-            "actualizar": "/actualizar-clima/{ciudad}",
-            "eliminar": "/eliminar-clima/{ciudad}",
-            "reporte": "/reporte/{ciudad}",
-            "agregar": "/agregar-clima/",
+            "buscar_por nombre": "/ciudades/{nombre}",
+            "actualizar": "/ciudades/{ciudad_id}",
+            "eliminar": "/ciudades/{ciudad_id}",
+            "agregar": "/ciudades/",
+            "filtar_por_condicion": "/ciudades/clima/{condicion}",
+            "filtar_por_temperatura": "/ciudades/temperatura/rango" 
         }
     }
 
-# 1. Endpoint con Path Parameter (Mostar todas las ciudades)
-@app.get("/ciudades/", tags=["Consultas"])
-async def listar_ciudades():
+# 1. GET - Listar todas las ciudades (con paginación)
+@app.get("/ciudades/", response_model=List[schemas.Ciudad], tags=["Consultas"])
+def listar_ciudades(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
     """
     Devuelve la lista completa de ciudades disponibles.
     """
-    if not clima_db:
-        return {"mensaje": "No hay ciudades registradas", "ciudades": []}
-    
-    return {"total": len(clima_db), "ciudades": list(clima_db.keys())}
+    ciudades = db.query(models.Ciudad).offset(skip).limit(limit).all()
+    return ciudades
 
-# 2. Endpoint con Query Parameter (Para buscar)
-# URL: /clima/?ciudad=madrid
-@app.get("/clima/", tags=["Consultas"])
-async def obtener_clima(ciudad: str):
+# 2. GET - Buscar ciudad por nombre 
+@app.get("/ciudades/{nombre}", response_model=schemas.Ciudad, tags=["Consultas"])
+def obtener_ciudad(nombre: str, db: Session = Depends(get_db)):
     """
-    Busca el clima de una ciudad. 
-    'ciudad' es un query parameter obligatorio.
+    Obtener datos de una ciudad específica por nombre.
     """
-    ciudad_normalizada = ciudad.lower().strip().replace(" ", "_")
-    
-    if ciudad_normalizada not in clima_db:
-        # Si la ciudad no existe, devolvemos un error 404
-        raise HTTPException(status_code=404, detail="Ciudad no encontrada")
-    
-    return {"ciudad": ciudad, "datos": clima_db[ciudad_normalizada]}
+    ciudad = db.query(models.Ciudad).filter(models.Ciudad.nombre.ilike(f"%{nombre}%")).first()
+    if not ciudad:
+        raise HTTPException(status_code= status.HTTP_404_NOT_FOUND, detail=f"Ciudad '{nombre}' no encontrada")
+    return ciudad
 
-# 3. Endpoint con Path Parameter (Para detalles técnicos)
-# URL: /reporte/madrid
-@app.get("/reporte/{ciudad}", tags=["Consultas"])
-async def generar_reporte(ciudad: str, detalle: bool = False):
+# 3. POST - Crear nueva ciudad 
+@app.post("/ciudades/", response_model=schemas.Ciudad, status_code=status.HTTP_201_CREATED, tags=["Gestión"])
+def crear_ciudad(ciudad: schemas.CiudadCreate, db: Session = Depends(get_db)):
     """
-    Genera un reporte detallado. 
-    'ciudad' es Path Parameter.
-    'detalle' es un Query Parameter opcional (booleano).
+    Agrega una nueva ciudad a la base de datos.
     """
-    ciudad_normalizada = ciudad.lower()
-    if ciudad_normalizada in clima_db:
-        datos = clima_db[ciudad_normalizada]
-        if detalle:
-            return {
-                "reporte": f"Reporte completo para {ciudad}",
-                "datos": datos,
-                "viento": "15km/h",
-                "presion": "1013 hPa"
-            }
-        return {"reporte": f"Resumen para {ciudad}", "temperatura": datos["temp"]}
-    
-    raise HTTPException(status_code=404, detail="No hay reporte disponible")
+    try:
+        nueva_ciudad = models.Ciudad(
+            nombre=ciudad.nombre.lower(),
+            temp=ciudad.temp,
+            condicion=ciudad.condicion,
+            humedad=ciudad.humedad
+        )
+        
+        db.add(nueva_ciudad)
+        db.commit()
+        db.refresh(nueva_ciudad)
+        
+        return nueva_ciudad
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"La ciudad {ciudad.nombre} ya existe")
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error al crear la ciudad")
 
-# 4. Endpoint con Query Parameter (Para agregar)
-# URL: /agregar-clima/
-@app.post("/agregar-clima/", status_code=status.HTTP_201_CREATED, tags=["Modificaciones"])
-async def agregar_clima(datos_ciudad: CiudadClima):
-    """
-    Agrega una nueva ciudad usando el Request Body (JSON).
-    """
-    # Convertimos el nombre a minúsculas para mantener consistencia en la DB
-    nombre_ciudad = datos_ciudad.ciudad.lower().strip()
-
-    if nombre_ciudad in clima_db:
-        raise HTTPException(status_code=400, detail="La ciudad ya existe")
-
-    # 3. Accedemos a los datos usando Pydantic
-    clima_db[nombre_ciudad] = {
-        "temp": datos_ciudad.temp,
-        "condicion": datos_ciudad.condicion,
-        "humedad": datos_ciudad.humedad
-    }
-    
-    return {"mensaje": "Ciudad agregada", "datos": clima_db[nombre_ciudad]}
-
-# 5. Endpoint con Path Parameter (Para actualizar)
-# URL: /actualizar-clima/madrid
-@app.put("/actualizar-clima/{ciudad}", tags=["Modificaciones"])
-async def actualizar_clima(ciudad: str, datos_ciudad: CiudadClima):
+# 4. PUT - Actualizar ciudad existente
+@app.put("/ciudades/{ciudad_id}", response_model=schemas.Ciudad, tags=["Gestión"])
+def actualizar_ciudad(ciudad_id: int, datos_ciudad: schemas.CiudadUpdate, db: Session = Depends(get_db)
+):
     """
     Actualiza el clima de una ciudad existente.
     """
-    ciudad_normalizada = ciudad.lower().strip().replace(" ", "_")
     
-    if ciudad_normalizada not in clima_db:
+    ciudad = db.query(models.Ciudad).filter(models.Ciudad.id == ciudad_id).first()
+    if not ciudad:
         raise HTTPException(status_code=404, detail="Ciudad no encontrada")
+    try:    
+        ciudad.temp = datos_ciudad.temp
+        ciudad.condicion = datos_ciudad.condicion
+        ciudad.humedad = datos_ciudad.humedad
+        
+        db.commit()
+        db.refresh(ciudad)
+        return ciudad
     
-    clima_db[ciudad_normalizada] = {
-        "temp": datos_ciudad.temp,
-        "condicion": datos_ciudad.condicion,
-        "humedad": datos_ciudad.humedad
-    }
-    
-    return {"mensaje": "Ciudad actualizada", "ciudad": ciudad, "datos": clima_db[ciudad_normalizada]}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al actualizar la ciudad"
+        )
 
-# 6. Endpoint con Path Parameter (Para eliminar)
-# URL: /eliminar-clima/madrid
-@app.delete("/eliminar-clima/{ciudad}", tags=["Modificaciones"])
-async def eliminar_clima(ciudad: str):
+# 5. Delete - Borrar una ciudad 
+@app.delete("/ciudades/{ciudad_id}", tags=["Gestión"])
+def eliminar_ciudad(ciudad_id: int, db: Session = Depends(get_db)):
     """
     Elimina una ciudad de la base de datos.
     """
-    ciudad_normalizada = ciudad.lower().strip().replace(" ", "_")
     
-    if ciudad_normalizada not in clima_db:
+    ciudad = db.query(models.Ciudad).filter(models.Ciudad.id == ciudad_id).first()
+    if not ciudad:
         raise HTTPException(status_code=404, detail="Ciudad no encontrada")
+    try:    
+        nombre_ciudad = ciudad.nombre
+        db.delete(ciudad)
+        db.commit()
+        
+        return {"mensaje": f"Ciudad {nombre_ciudad} eliminada correctamente.", "id": ciudad_id }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="No se pudo borrar la ciudad")
+
+# 6. GET - Filtrar por condición climática
+@app.get("/ciudades/clima/{condicion}", response_model=List[schemas.Ciudad], tags=["Consultas"])
+def  filtrar_por_condicion(condicion: str, db: Session = Depends(get_db)):
+    """
+    Filtrar ciudades por condiccion del clima
+    """
     
-    del clima_db[ciudad_normalizada]
-    return {"mensaje": f"Ciudad {ciudad} eliminada correctamente"}
+    ciudades =  db.query(models.Ciudad).filter(models.Ciudad.condicion.ilike(f"%{condicion}%")).all()
+    
+    if not ciudades:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No se encontraron ciudades con condición '{condicion}'")
+    
+    return ciudades
+
+# 7. GET - Filtrar por rango de temperatura
+@app.get("/ciudades/temperatura/rango",response_model=List[schemas.Ciudad], tags=["Consultas"])
+def filtrar_por_temperatura(
+    temp_min: int = 0,
+    temp_max: int = 50,
+    db: Session = Depends(get_db)
+):
+    """
+    Filtrar ciudades por temperatura
+    """
+    
+    ciudades = db.query(models.Ciudad).filter(
+        models.Ciudad.temp >= temp_min,
+        models.Ciudad.temp <= temp_max).all()
+    
+    if not ciudades:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No se encontraron ciudades en el rango {temp_min}°C - {temp_max}°C")
+    
+    return ciudades
